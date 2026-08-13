@@ -6,9 +6,10 @@ import datetime
 # --- CONFIGURATION (The "Control Panel") ---
 st.set_page_config(page_title="Spot Grid Assistant", layout="wide")
 
-BINANCE_EXCHANGE_INFO_URL = "https://api.binance.com/api/v3/exchangeInfo"
-BINANCE_24HR_URL = "https://api.binance.com/api/v3/ticker/24hr"
-BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
+BINANCE_EXCHANGE_INFO_URL = "https://data-api.binance.vision/api/v3/exchangeInfo"
+BINANCE_24HR_URL = "https://data-api.binance.vision/api/v3/ticker/24hr"
+BINANCE_KLINES_URL = "https://data-api.binance.vision/api/v3/klines"
+
 
 # --- BACKEND ENGINE (Data GuardDog & API Pipeline) ---
 
