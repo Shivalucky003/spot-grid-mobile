@@ -10,7 +10,7 @@ import math
 # ============================================================
 
 st.set_page_config(
-    page_title="Binance Spot Grid Assistant V3",
+    page_title="Binance Spot Grid Assistant V3.5",
     layout="wide"
 )
 
@@ -39,9 +39,6 @@ if "market_data" not in st.session_state:
 if "results" not in st.session_state:
     st.session_state["results"] = pd.DataFrame()
 
-if "selected_symbol" not in st.session_state:
-    st.session_state["selected_symbol"] = None
-
 # ============================================================
 # HTTP SESSION
 # ============================================================
@@ -50,12 +47,12 @@ if "selected_symbol" not in st.session_state:
 def get_http_session():
     session = requests.Session()
     session.headers.update({
-        "User-Agent": "SpotGridAssistant/3.0"
+        "User-Agent": "SpotGridAssistant/3.5"
     })
     return session
 
 # ============================================================
-# BINANCE EXCHANGE INFO
+# BINANCE EXCHANGE INFO & UNIVERSE
 # ============================================================
 
 @st.cache_data(ttl=600)
@@ -67,10 +64,6 @@ def fetch_exchange_info():
         return response.json()
     except Exception:
         return {}
-
-# ============================================================
-# BUILD SPOT UNIVERSE + FILTERS
-# ============================================================
 
 @st.cache_data(ttl=600)
 def fetch_spot_universe():
@@ -151,7 +144,7 @@ def fetch_24h_data():
         return pd.DataFrame()
 
 # ============================================================
-# KLINES
+# KLINES & TECHNICAL INDICATORS (PHASE 4)
 # ============================================================
 
 @st.cache_data(ttl=300)
@@ -179,12 +172,59 @@ def fetch_klines(symbol, interval="1h", limit=336):
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
         df["OpenTime"] = pd.to_datetime(df["OpenTime"], unit="ms")
+        
+        # --- CALCULATE INDICATORS ---
+        df = calculate_indicators(df)
+        
         return df
     except Exception:
         return pd.DataFrame()
 
+def calculate_indicators(df, period=14):
+    """Calculates ATR, RSI, and ADX natively using Pandas/Numpy."""
+    if len(df) < period + 1:
+        df['ATR'] = 0.0
+        df['RSI'] = 50.0
+        df['ADX'] = 0.0
+        df['Regime'] = "Unknown"
+        return df
+
+    # 1. True Range (TR) & ATR
+    high_low = df['High'] - df['Low']
+    high_close = (df['High'] - df['Close'].shift(1)).abs()
+    low_close = (df['Low'] - df['Close'].shift(1)).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    df['ATR'] = tr.rolling(period).mean().bfill()
+
+    # 2. Relative Strength Index (RSI)
+    delta = df['Close'].diff()
+    gain = delta.where(delta > 0, 0.0).rolling(period).mean()
+    loss = (-delta.where(delta < 0, 0.0)).rolling(period).mean()
+    rs = gain / loss.replace(0, np.nan)
+    df['RSI'] = (100 - (100 / (1 + rs))).fillna(50.0)
+
+    # 3. Average Directional Index (ADX)
+    up = df['High'].diff()
+    down = -df['Low'].diff()
+    pos_dm = np.where((up > down) & (up > 0), up, 0.0)
+    neg_dm = np.where((down > up) & (down > 0), down, 0.0)
+    
+    tr_sum = tr.rolling(period).sum()
+    pos_di = 100 * (pd.Series(pos_dm, index=df.index).rolling(period).sum() / tr_sum.replace(0, np.nan))
+    neg_di = 100 * (pd.Series(neg_dm, index=df.index).rolling(period).sum() / tr_sum.replace(0, np.nan))
+    
+    di_diff = (pos_di - neg_di).abs()
+    di_sum = pos_di + neg_di
+    dx = 100 * (di_diff / di_sum.replace(0, np.nan))
+    df['ADX'] = dx.rolling(period).mean().fillna(0.0)
+
+    # 4. Regime Classification (ADX < 25 indicates a Ranging/Sideways Market)
+    df['Regime'] = np.where(df['ADX'] < 25, "Ranging 🟢", "Trending 🔴")
+
+    return df
+
 # ============================================================
-# PRICE ROUNDING
+# PRICE ROUNDING & GRID BUILDER
 # ============================================================
 
 def round_to_tick(price, tick_size):
@@ -197,10 +237,6 @@ def round_quantity(quantity, step_size):
         return quantity
     return math.floor(quantity / step_size) * step_size
 
-# ============================================================
-# BUILD GRID
-# ============================================================
-
 def build_grid(lower, upper, grid_count, grid_type):
     if grid_type == "Arithmetic":
         return np.linspace(lower, upper, grid_count + 1).tolist()
@@ -211,10 +247,6 @@ def build_grid(lower, upper, grid_count, grid_type):
     ratio = (upper / lower) ** (1 / grid_count)
     levels = [lower * (ratio ** i) for i in range(grid_count + 1)]
     return levels
-
-# ============================================================
-# INITIAL GRID POSITION
-# ============================================================
 
 def find_current_grid_index(grid, current_price):
     index = 0
@@ -227,7 +259,7 @@ def find_current_grid_index(grid, current_price):
     return index
 
 # ============================================================
-# GRID BACKTEST
+# GRID BACKTEST ENGINE
 # ============================================================
 
 def backtest_grid(df, lower, upper, grid_count, capital, fee_pct, grid_type, filters):
@@ -247,8 +279,6 @@ def backtest_grid(df, lower, upper, grid_count, capital, fee_pct, grid_type, fil
 
     if len(grid) < 2:
         return None
-
-    current_index = find_current_grid_index(grid, current_price)
 
     quote_balance = capital * 0.50
     base_balance = (capital * 0.50) / current_price
@@ -376,39 +406,32 @@ def backtest_grid(df, lower, upper, grid_count, capital, fee_pct, grid_type, fil
     total_return = final_equity - starting_equity
     roi_pct = (total_return / starting_equity) * 100
     realized_roi = (realized_profit / starting_equity) * 100
-    range_width_pct = ((upper - lower) / lower) * 100
 
-    result = {
+    return {
         "Final Equity": final_equity,
         "Total Return": total_return,
         "ROI %": roi_pct,
         "Realized Grid Profit": realized_profit,
         "Realized ROI %": realized_roi,
-        "Gross Profit": gross_profit,
-        "Fees": total_fees,
-        "Completed Cycles": completed_cycles,
         "Trades": len(trades),
         "Max Drawdown %": max_drawdown,
-        "Remaining USDT": quote_balance,
-        "Remaining Coin": base_balance,
-        "Range %": range_width_pct,
-        "Grid Levels": len(grid),
-        "Grid Spacing": np.mean(np.diff(grid)) if len(grid) > 1 else 0,
-        "Grid": grid,
-        "Trades Data": pd.DataFrame(trades)
+        "Grid Spacing": np.mean(np.diff(grid)) if len(grid) > 1 else 0
     }
 
-    return result
-
 # ============================================================
-# STRATEGY RANGE
+# ATR DYNAMIC RANGE CALCULATION (PHASE 5)
 # ============================================================
 
-def calculate_range(df, buffer_pct):
+def calculate_range_atr(df, atr_multiplier=2.0):
+    """Calculates Grid Range using ATR Volatility instead of static buffers."""
     high = float(df["High"].max())
     low = float(df["Low"].min())
-    upper = high * (1 + buffer_pct / 100)
-    lower = low * (1 - buffer_pct / 100)
+    latest_atr = float(df["ATR"].iloc[-1]) if "ATR" in df and not df["ATR"].empty else 0.0
+
+    # Expand boundaries using ATR volatility multiplier
+    upper = high + (latest_atr * atr_multiplier)
+    lower = max(0.0001, low - (latest_atr * atr_multiplier))
+    
     return lower, upper
 
 # ============================================================
@@ -416,36 +439,33 @@ def calculate_range(df, buffer_pct):
 # ============================================================
 
 def main():
-    st.title("⚡ Binance Spot Grid Assistant V3")
+    st.title("⚡ Binance Spot Grid Assistant V3.5")
     
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.info(f"**Data Freshness:** {current_time} UTC | Engine: Operational")
 
     # --- INTERACTIVE SETTINGS MENU ---
     st.markdown("### 1. Strategy Parameters")
-    with st.expander("⚙️ Tap to Edit Trading Rules & Capital", expanded=False):
+    with st.expander("⚙️ Tap to Edit Trading Rules & Indicator Settings", expanded=False):
         wallet_balance = st.number_input("Available Capital (USDT)", min_value=0.0, value=1000.0, step=50.0)
         
         fee_choice = st.selectbox("Trading Fee Tier (Round-Trip)", ["Standard (0.20%)", "BNB Discount (0.15%)", "Zero Fee (0.00%)"])
-        if "0.20" in fee_choice:
-            fee_pct = 0.20
-        elif "0.15" in fee_choice:
-            fee_pct = 0.15
-        else:
-            fee_pct = 0.00
+        fee_pct = 0.20 if "0.20" in fee_choice else (0.15 if "0.15" in fee_choice else 0.00)
             
         grid_type = st.selectbox("Grid Type", ["Arithmetic", "Geometric"])
+        
+        # Indicator Controls
+        only_ranging = st.checkbox("Filter Out Trending Coins (Only keep ADX < 25)", value=False)
+        atr_mult = st.slider("ATR Volatility Range Multiplier", 0.5, 4.0, 1.5, step=0.1)
             
-        st.markdown("**Grid Density per Strategy**")
+        st.markdown("**Target Profit per Grid Step (%)**")
         col1, col2, col3 = st.columns(3)
         with col1:
-            tight_grids = st.number_input("Tight (3D) Grids", min_value=5, value=20, step=1)
+            tight_pct = st.number_input("Tight (3D)", min_value=0.1, value=0.6, step=0.1)
         with col2:
-            mod_grids = st.number_input("Mod (7D) Grids", min_value=5, value=15, step=1)
+            mod_pct = st.number_input("Mod (7D)", min_value=0.1, value=1.0, step=0.1)
         with col3:
-            wide_grids = st.number_input("Wide (14D) Grids", min_value=5, value=10, step=1)
-            
-        buffer_pct = st.number_input("Range Safety Buffer (%)", min_value=0.0, value=1.0, step=0.1)
+            wide_pct = st.number_input("Wide (14D)", min_value=0.1, value=1.5, step=0.1)
 
     st.markdown("### 2. Market Universe")
     if st.button("Scan Binance (Phase 1 & 2)"):
@@ -465,7 +485,7 @@ def main():
 
     if st.session_state.get('candidates'):
         st.markdown("### 3. Backtest Engine (Phases 3-9)")
-        if st.button("Run Deep Backtest"):
+        if st.button("Run Indicator-Guided Backtest"):
             results = []
             progress_bar = st.progress(0)
             candidates = st.session_state['candidates']
@@ -475,6 +495,15 @@ def main():
                 df_klines = fetch_klines(coin, interval="1h", limit=336)
                 
                 if not df_klines.empty:
+                    latest_adx = round(df_klines['ADX'].iloc[-1], 1)
+                    latest_rsi = round(df_klines['RSI'].iloc[-1], 1)
+                    regime = df_klines['Regime'].iloc[-1]
+                    
+                    # Apply ADX Filter if enabled by user
+                    if only_ranging and "Trending" in regime:
+                        progress_bar.progress((i + 1) / len(candidates))
+                        continue
+
                     df_3d = df_klines.tail(72).copy()
                     df_7d = df_klines.tail(168).copy()
                     df_14d = df_klines.tail(336).copy()
@@ -482,19 +511,28 @@ def main():
                     coin_filter = filters_dict.get(coin, {})
                     
                     strategies = [
-                        {"Type": "Tight (3D)", "df": df_3d, "grids": int(tight_grids)},
-                        {"Type": "Mod (7D)", "df": df_7d, "grids": int(mod_grids)},
-                        {"Type": "Wide (14D)", "df": df_14d, "grids": int(wide_grids)}
+                        {"Type": "Tight (3D)", "df": df_3d, "Target_Pct": tight_pct},
+                        {"Type": "Mod (7D)", "df": df_7d, "Target_Pct": mod_pct},
+                        {"Type": "Wide (14D)", "df": df_14d, "Target_Pct": wide_pct}
                     ]
                     
                     for strat in strategies:
-                        lower, upper = calculate_range(strat["df"], buffer_pct)
+                        # Dynamic Range using ATR
+                        lower, upper = calculate_range_atr(strat["df"], atr_multiplier=atr_mult)
+                        
+                        if lower > 0:
+                            range_width_pct = ((upper - lower) / lower) * 100
+                            ideal_grids = int(range_width_pct / strat["Target_Pct"])
+                        else:
+                            ideal_grids = 5
+                            
+                        suggested_grids = max(5, min(ideal_grids, 150))
                         
                         bt_result = backtest_grid(
                             df=strat["df"],
                             lower=lower,
                             upper=upper,
-                            grid_count=strat["grids"],
+                            grid_count=suggested_grids,
                             capital=wallet_balance,
                             fee_pct=fee_pct,
                             grid_type=grid_type,
@@ -502,26 +540,5 @@ def main():
                         )
                         
                         if bt_result:
-                            results.append({
-                                "Coin": coin, 
-                                "Strategy": strat["Type"], 
-                                "Lower": round(lower, 4), 
-                                "Upper": round(upper, 4), 
-                                "Grids": strat["grids"], 
-                                "Trades": bt_result["Trades"],
-                                "Max Drawdown %": round(bt_result["Max Drawdown %"], 2),
-                                "Realized ROI %": round(bt_result["Realized ROI %"], 2)
-                            })
-                            
-                progress_bar.progress((i + 1) / len(candidates))
-                
-            st.markdown("### 🏆 V3 Final Backtest Ranking")
-            if results:
-                final_df = pd.DataFrame(results).sort_values(by="Realized ROI %", ascending=False).reset_index(drop=True)
-                st.dataframe(final_df, use_container_width=True)
-            else:
-                st.warning("No valid data could be calculated.")
-
-if __name__ == "__main__":
-    main()
-    
+                            step_pct = (bt_result["Grid Spacing"] / lower) * 100 if lower > 0 else 0
+  
