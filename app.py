@@ -17,10 +17,12 @@ KLINES_URL = "https://data-api.binance.vision/api/v3/klines"
 STABLECOIN_BLACKLIST = {"USDC", "FDUSD", "TUSD", "BUSD", "DAI", "USDP", "EUR", "AEUR", "USDT", "PAX", "USD1", "RLUSD", "PYUSD", "USDE", "USDS", "USDD", "GUSD", "LUSD", "FRAX", "USDJ", "USDB", "DEUSD", "SUSD", "EUSD", "CUSD", "EURS", "TRY", "BRL", "BIDR", "U"}
 
 # ============================================================
-# SESSION STATE & API SETUP
+# SESSION STATE
 # ============================================================
 if "candidates" not in st.session_state:
     st.session_state["candidates"] = []
+if "market_data" not in st.session_state:
+    st.session_state["market_data"] = pd.DataFrame()
 if "filters" not in st.session_state:
     st.session_state["filters"] = {}
 
@@ -111,23 +113,23 @@ def calculate_indicators(df, period=14):
     delta = df['Close'].diff()
     gain = delta.clip(lower=0).rolling(period).mean()
     loss = -delta.clip(upper=0).rolling(period).mean()
-    rs = gain / loss.replace(0, np.nan)
+    rs = gain / loss.replace(0, float('nan'))
     df['RSI'] = (100 - (100 / (1 + rs))).fillna(50.0)
 
     up = df['High'].diff()
     down = -df['Low'].diff()
-    pos_dm = np.where((up > down) & (up > 0), up, 0.0)
-    neg_dm = np.where((down > up) & (down > 0), down, 0.0)
+    pos_dm = [u if (pd.notna(u) and pd.notna(d) and u > d and u > 0) else 0.0 for u, d in zip(up, down)]
+    neg_dm = [d if (pd.notna(u) and pd.notna(d) and d > u and d > 0) else 0.0 for u, d in zip(up, down)]
     
     tr_sum = tr.rolling(period).sum()
-    pos_di = 100 * (pd.Series(pos_dm, index=df.index).rolling(period).sum() / tr_sum.replace(0, np.nan))
-    neg_di = 100 * (pd.Series(neg_dm, index=df.index).rolling(period).sum() / tr_sum.replace(0, np.nan))
+    pos_di = 100 * (pd.Series(pos_dm, index=df.index).rolling(period).sum() / tr_sum.replace(0, float('nan')))
+    neg_di = 100 * (pd.Series(neg_dm, index=df.index).rolling(period).sum() / tr_sum.replace(0, float('nan')))
     
     di_diff = (pos_di - neg_di).abs()
     di_sum = pos_di + neg_di
-    dx = 100 * (di_diff / di_sum.replace(0, np.nan))
+    dx = 100 * (di_diff / di_sum.replace(0, float('nan')))
     df['ADX'] = dx.rolling(period).mean().fillna(0.0)
-    df['Regime'] = np.where(df['ADX'] < 25, "Ranging 🟢", "Trending 🔴")
+    df['Regime'] = df['ADX'].apply(lambda x: "Ranging" if x < 25 else "Trending")
     return df
 
 def calculate_range_atr(df, atr_multiplier=2.0):
@@ -186,19 +188,24 @@ def backtest_grid(df, lower, upper, grid_count, capital, fee_pct, grid_type, fil
         o, h, l, c = float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"])
         path = [o, l, h, c] if c >= o else [o, h, l, c]
         for start_price, end_price in zip(path[:-1], path[1:]):
+            
+            # --- PRICE MOVING UP ---
             if end_price > start_price:
                 crossed_levels = [i for i in range(1, len(grid)) if start_price < grid[i] <= end_price]
                 for lvl in crossed_levels:
                     price = grid[lvl]
-                    if lvl in inventory:
-                        qty = inventory[lvl]["quantity"]
+                    buy_lvl = lvl - 1  # THE FIX: Sell the inventory acquired at the grid level BELOW this one
+                    if buy_lvl in inventory:
+                        qty = inventory[buy_lvl]["quantity"]
                         notional = qty * price
                         if min_notional and notional < min_notional: continue
                         fee = notional * fee_pct / 100
                         quote_balance += (notional - fee)
-                        buy_cost = inventory.pop(lvl)["cost"]
+                        buy_cost = inventory.pop(buy_lvl)["cost"]
                         realized_profit += (notional - fee - buy_cost)
                         crosses += 1
+                        
+            # --- PRICE MOVING DOWN ---
             elif end_price < start_price:
                 crossed_levels = [i for i in range(len(grid) - 1) if end_price <= grid[i] < start_price]
                 for lvl in reversed(crossed_levels):
@@ -230,9 +237,6 @@ def backtest_grid(df, lower, upper, grid_count, capital, fee_pct, grid_type, fil
         "Grid Spacing": grid_spacing
     }
 
-# ============================================================
-# MAIN APPLICATION
-# ============================================================
 def main():
     st.title("⚡ Binance Spot Grid Assistant V3.5")
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -328,4 +332,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+                        
