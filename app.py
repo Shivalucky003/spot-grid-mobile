@@ -6,16 +6,22 @@ import datetime
 # --- CONFIGURATION (The "Control Panel") ---
 st.set_page_config(page_title="Spot Grid Assistant", layout="wide")
 
+# Using the data-vision endpoints to avoid US geo-blocking issues on cloud servers
 BINANCE_EXCHANGE_INFO_URL = "https://data-api.binance.vision/api/v3/exchangeInfo"
 BINANCE_24HR_URL = "https://data-api.binance.vision/api/v3/ticker/24hr"
 BINANCE_KLINES_URL = "https://data-api.binance.vision/api/v3/klines"
 
+# List of stablecoins to exclude from grid bot ranking
+STABLECOIN_BLACKLIST = {
+    "USDC", "FDUSD", "TUSD", "BUSD", "DAI", 
+    "USDP", "EUR", "AEUR", "USDT", "PAX"
+}
 
 # --- BACKEND ENGINE (Data GuardDog & API Pipeline) ---
 
 @st.cache_data(ttl=300) # Caches data for 5 minutes (The "Clock Buffer")
 def fetch_spot_universe():
-    """Fetches and filters Binance exchange info for USDT spot pairs."""
+    """Fetches and filters Binance exchange info for USDT spot pairs, excluding stablecoins."""
     try:
         response = requests.get(BINANCE_EXCHANGE_INFO_URL, timeout=10)
         response.raise_for_status()
@@ -23,8 +29,15 @@ def fetch_spot_universe():
         
         symbols = []
         for s in data['symbols']:
-            # Memory Validation: Only active USDT spot markets
-            if s['status'] == 'TRADING' and s['quoteAsset'] == 'USDT' and s['isSpotTradingAllowed']:
+            base_asset = s.get('baseAsset', '')
+            quote_asset = s.get('quoteAsset', '')
+            
+            # Validation: Must be TRADING, USDT quote, spot allowed, AND not a stablecoin
+            if (s.get('status') == 'TRADING' and 
+                quote_asset == 'USDT' and 
+                s.get('isSpotTradingAllowed', True) and 
+                base_asset not in STABLECOIN_BLACKLIST):
+                
                 symbols.append(s['symbol'])
         return symbols
     except Exception as e:
@@ -51,13 +64,15 @@ def fetch_24h_data():
 def fetch_klines(symbol, interval="1h", limit=500):
     """The Conveyor Belt: Fetches historical klines for a single coin at a time."""
     params = {"symbol": symbol, "interval": interval, "limit": limit}
-    response = requests.get(BINANCE_KLINES_URL, params=params, timeout=10)
-    
-    if response.status_code == 200:
-        columns = ['OpenTime', 'Open', 'High', 'Low', 'Close', 'Volume', 'CloseTime', 'QAV', 'NumTrades', 'TBB', 'TBQ', 'Ignore']
-        df = pd.DataFrame(response.json(), columns=columns)
-        df['Close'] = pd.to_numeric(df['Close'])
-        return df
+    try:
+        response = requests.get(BINANCE_KLINES_URL, params=params, timeout=10)
+        if response.status_code == 200:
+            columns = ['OpenTime', 'Open', 'High', 'Low', 'Close', 'Volume', 'CloseTime', 'QAV', 'NumTrades', 'TBB', 'TBQ', 'Ignore']
+            df = pd.DataFrame(response.json(), columns=columns)
+            df['Close'] = pd.to_numeric(df['Close'])
+            return df
+    except Exception:
+        pass
     return pd.DataFrame()
 
 # --- FRONTEND (The Mobile Dashboard) ---
@@ -125,4 +140,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
