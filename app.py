@@ -200,22 +200,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-            # Smart stablecoin filter:
-            # 1. Must not be in the blacklist
-            # 2. Base asset must not contain 'USD' (catches new/unlisted stablecoins)
-            is_stablecoin = (
-                base_asset in STABLECOIN_BLACKLIST or 
-                "USD" in base_asset or 
-                "EUR" in base_asset
-            )
-            
-            # Validation: Must be TRADING, USDT quote, spot allowed, AND not a stablecoin
-            if (s.get('status') == 'TRADING' and 
-                quote_asset == 'USDT' and 
-                s.get('isSpotTradingAllowed', True) and 
-                not is_stablecoin):
-                
-                symbols.append(s['symbol'])
         return symbols
     except Exception as e:
         st.error(f"Fallback Plan Triggered: Failed to fetch exchange info. Error: {e}")
