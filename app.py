@@ -2,334 +2,969 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-import datetime
+import datetime as dt
 import math
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
-st.set_page_config(page_title="Binance Spot Grid Assistant V3.5", layout="wide")
 
-EXCHANGE_INFO_URL = "https://data-api.binance.vision/api/v3/exchangeInfo"
-TICKER_24H_URL = "https://data-api.binance.vision/api/v3/ticker/24hr"
-KLINES_URL = "https://data-api.binance.vision/api/v3/klines"
+st.set_page_config(
+    page_title="Binance Spot Grid Assistant V4",
+    layout="wide"
+)
 
-STABLECOIN_BLACKLIST = {"USDC", "FDUSD", "TUSD", "BUSD", "DAI", "USDP", "EUR", "AEUR", "USDT", "PAX", "USD1", "RLUSD", "PYUSD", "USDE", "USDS", "USDD", "GUSD", "LUSD", "FRAX", "USDJ", "USDB", "DEUSD", "SUSD", "EUSD", "CUSD", "EURS", "TRY", "BRL", "BIDR", "U"}
+EXCHANGE_INFO_URL = (
+    "https://data-api.binance.vision/api/v3/exchangeInfo"
+)
+
+TICKER_24H_URL = (
+    "https://data-api.binance.vision/api/v3/ticker/24hr"
+)
+
+KLINES_URL = (
+    "https://data-api.binance.vision/api/v3/klines"
+)
+
+STABLECOIN_BLACKLIST = {
+    "USDC", "FDUSD", "TUSD", "BUSD", "DAI",
+    "USDP", "EUR", "AEUR", "USDT", "PAX",
+    "USD1", "RLUSD", "PYUSD", "USDE", "USDS",
+    "USDD", "GUSD", "LUSD", "FRAX", "USDJ",
+    "USDB", "DEUSD", "SUSD", "EUSD", "CUSD",
+    "EURS", "TRY", "BRL", "BIDR", "U"
+}
+
 
 # ============================================================
 # SESSION STATE
 # ============================================================
+
 if "candidates" not in st.session_state:
-    st.session_state["candidates"] = []
-if "market_data" not in st.session_state:
-    st.session_state["market_data"] = pd.DataFrame()
+    st.session_state.candidates = []
+
 if "filters" not in st.session_state:
-    st.session_state["filters"] = {}
+    st.session_state.filters = {}
+
+if "market_data" not in st.session_state:
+    st.session_state.market_data = pd.DataFrame()
+
+if "scan_done" not in st.session_state:
+    st.session_state.scan_done = False
+
+
+# ============================================================
+# HTTP SESSION
+# ============================================================
 
 @st.cache_resource
-def get_http_session():
+def get_session():
+
     session = requests.Session()
-    session.headers.update({"User-Agent": "SpotGridAssistant/3.5"})
+
+    session.headers.update({
+        "User-Agent": "SpotGridAssistant/4.0"
+    })
+
     return session
+
+
+# ============================================================
+# BINANCE SPOT UNIVERSE
+# ============================================================
 
 @st.cache_data(ttl=600)
 def fetch_spot_universe():
-    session = get_http_session()
+
     try:
-        response = session.get(EXCHANGE_INFO_URL, timeout=15)
+
+        response = get_session().get(
+            EXCHANGE_INFO_URL,
+            timeout=20
+        )
+
         response.raise_for_status()
+
         data = response.json()
+
         symbols = []
         filters = {}
+
         for s in data.get("symbols", []):
-            base_asset = s.get("baseAsset", "").upper()
-            quote_asset = s.get("quoteAsset", "").upper()
-            is_stablecoin = base_asset in STABLECOIN_BLACKLIST or "USD" in base_asset or "EUR" in base_asset
-            if s.get("status") == "TRADING" and quote_asset == "USDT" and s.get("isSpotTradingAllowed", True) and not is_stablecoin:
-                symbols.append(s["symbol"])
-                sym_filters = {"tickSize": None, "stepSize": None, "minQty": None, "minNotional": None}
-                for f in s.get("filters", []):
-                    ftype = f.get("filterType")
-                    if ftype == "PRICE_FILTER":
-                        sym_filters["tickSize"] = float(f.get("tickSize", 0))
-                    elif ftype == "LOT_SIZE":
-                        sym_filters["stepSize"] = float(f.get("stepSize", 0))
-                        sym_filters["minQty"] = float(f.get("minQty", 0))
-                    elif ftype in ("MIN_NOTIONAL", "NOTIONAL"):
-                        sym_filters["minNotional"] = float(f.get("minNotional", 0))
-                filters[s["symbol"]] = sym_filters
+
+            base = str(
+                s.get("baseAsset", "")
+            ).upper()
+
+            quote = str(
+                s.get("quoteAsset", "")
+            ).upper()
+
+            is_stablecoin = (
+                base in STABLECOIN_BLACKLIST
+                or "USD" in base
+                or "EUR" in base
+            )
+
+            if (
+                s.get("status") == "TRADING"
+                and quote == "USDT"
+                and s.get(
+                    "isSpotTradingAllowed",
+                    True
+                )
+                and not is_stablecoin
+            ):
+
+                symbol = s["symbol"]
+
+                symbols.append(symbol)
+
+                symbol_filters = {
+                    "tickSize": 0.0,
+                    "stepSize": 0.0,
+                    "minQty": 0.0,
+                    "minNotional": 0.0
+                }
+
+                for item in s.get("filters", []):
+
+                    filter_type = item.get(
+                        "filterType"
+                    )
+
+                    if filter_type == "PRICE_FILTER":
+
+                        symbol_filters["tickSize"] = float(
+                            item.get("tickSize", 0)
+                        )
+
+                    elif filter_type == "LOT_SIZE":
+
+                        symbol_filters["stepSize"] = float(
+                            item.get("stepSize", 0)
+                        )
+
+                        symbol_filters["minQty"] = float(
+                            item.get("minQty", 0)
+                        )
+
+                    elif filter_type in (
+                        "MIN_NOTIONAL",
+                        "NOTIONAL"
+                    ):
+
+                        symbol_filters["minNotional"] = float(
+                            item.get("minNotional", 0)
+                        )
+
+                filters[symbol] = symbol_filters
+
         return symbols, filters
+
     except Exception:
+
         return [], {}
+
+
+# ============================================================
+# 24H MARKET DATA
+# ============================================================
 
 @st.cache_data(ttl=300)
 def fetch_24h_data():
-    session = get_http_session()
+
     try:
-        response = session.get(TICKER_24H_URL, timeout=15)
+
+        response = get_session().get(
+            TICKER_24H_URL,
+            timeout=20
+        )
+
         response.raise_for_status()
-        df = pd.DataFrame(response.json())
-        numeric_cols = ["lastPrice", "highPrice", "lowPrice", "volume", "quoteVolume", "priceChangePercent"]
-        for col in numeric_cols:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-        return df[["symbol", "lastPrice", "priceChangePercent", "quoteVolume"]]
+
+        df = pd.DataFrame(
+            response.json()
+        )
+
+        required_columns = [
+            "symbol",
+            "lastPrice",
+            "priceChangePercent",
+            "quoteVolume"
+        ]
+
+        for column in required_columns[1:]:
+
+            df[column] = pd.to_numeric(
+                df[column],
+                errors="coerce"
+            )
+
+        return df[
+            required_columns
+        ].dropna()
+
     except Exception:
+
         return pd.DataFrame()
 
+
+# ============================================================
+# KLINE DATA
+# ============================================================
+
 @st.cache_data(ttl=300)
-def fetch_klines(symbol, interval="1h", limit=336):
-    session = get_http_session()
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
+def fetch_klines(
+    symbol,
+    interval="1h",
+    limit=1000
+):
+
     try:
-        response = session.get(KLINES_URL, params=params, timeout=15)
-        if response.status_code == 200:
-            columns = ["OpenTime", "Open", "High", "Low", "Close", "Volume", "CloseTime", "QuoteVolume", "Trades", "TBB", "TBQ", "Ignore"]
-            df = pd.DataFrame(response.json(), columns=columns)
-            for col in ["Open", "High", "Low", "Close"]:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-            df = calculate_indicators(df)
-            return df
+
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit
+        }
+
+        response = get_session().get(
+            KLINES_URL,
+            params=params,
+            timeout=20
+        )
+
+        if response.status_code != 200:
+            return pd.DataFrame()
+
+        columns = [
+            "OpenTime",
+            "Open",
+            "High",
+            "Low",
+            "Close",
+            "Volume",
+            "CloseTime",
+            "QuoteVolume",
+            "Trades",
+            "TBB",
+            "TBQ",
+            "Ignore"
+        ]
+
+        df = pd.DataFrame(
+            response.json(),
+            columns=columns
+        )
+
+        numeric_columns = [
+            "Open",
+            "High",
+            "Low",
+            "Close",
+            "Volume",
+            "QuoteVolume"
+        ]
+
+        for column in numeric_columns:
+
+            df[column] = pd.to_numeric(
+                df[column],
+                errors="coerce"
+            )
+
+        df["OpenTime"] = pd.to_datetime(
+            df["OpenTime"],
+            unit="ms",
+            utc=True
+        )
+
+        df["CloseTime"] = pd.to_datetime(
+            df["CloseTime"],
+            unit="ms",
+            utc=True
+        )
+
+        df = add_indicators(df)
+
+        return df.dropna(
+            subset=[
+                "Open",
+                "High",
+                "Low",
+                "Close"
+            ]
+        )
+
     except Exception:
-        pass
-    return pd.DataFrame()
+
+        return pd.DataFrame()
+
 
 # ============================================================
 # TECHNICAL INDICATORS
 # ============================================================
-def calculate_indicators(df, period=14):
-    if len(df) < period + 1:
-        df['ATR'] = 0.0
-        df['RSI'] = 50.0
-        df['ADX'] = 0.0
-        df['Regime'] = "Unknown"
-        return df
 
-    high_low = df['High'] - df['Low']
-    high_close = (df['High'] - df['Close'].shift(1)).abs()
-    low_close = (df['Low'] - df['Close'].shift(1)).abs()
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    df['ATR'] = tr.rolling(period).mean().bfill()
+def add_indicators(
+    df,
+    period=14
+):
 
-    delta = df['Close'].diff()
-    gain = delta.clip(lower=0).rolling(period).mean()
-    loss = -delta.clip(upper=0).rolling(period).mean()
-    rs = gain / loss.replace(0, float('nan'))
-    df['RSI'] = (100 - (100 / (1 + rs))).fillna(50.0)
+    df = df.copy()
 
-    up = df['High'].diff()
-    down = -df['Low'].diff()
-    pos_dm = [u if (pd.notna(u) and pd.notna(d) and u > d and u > 0) else 0.0 for u, d in zip(up, down)]
-    neg_dm = [d if (pd.notna(u) and pd.notna(d) and d > u and d > 0) else 0.0 for u, d in zip(up, down)]
-    
-    tr_sum = tr.rolling(period).sum()
-    pos_di = 100 * (pd.Series(pos_dm, index=df.index).rolling(period).sum() / tr_sum.replace(0, float('nan')))
-    neg_di = 100 * (pd.Series(neg_dm, index=df.index).rolling(period).sum() / tr_sum.replace(0, float('nan')))
-    
-    di_diff = (pos_di - neg_di).abs()
-    di_sum = pos_di + neg_di
-    dx = 100 * (di_diff / di_sum.replace(0, float('nan')))
-    df['ADX'] = dx.rolling(period).mean().fillna(0.0)
-    df['Regime'] = df['ADX'].apply(lambda x: "Ranging" if x < 25 else "Trending")
+    # --------------------------------------------------------
+    # ATR
+    # --------------------------------------------------------
+
+    previous_close = df["Close"].shift(1)
+
+    true_range = pd.concat(
+        [
+            df["High"] - df["Low"],
+            (
+                df["High"] -
+                previous_close
+            ).abs(),
+            (
+                df["Low"] -
+                previous_close
+            ).abs()
+        ],
+        axis=1
+    ).max(axis=1)
+
+    df["ATR"] = (
+        true_range
+        .rolling(period)
+        .mean()
+    )
+
+    # --------------------------------------------------------
+    # RSI
+    # --------------------------------------------------------
+
+    delta = df["Close"].diff()
+
+    gain = (
+        delta
+        .clip(lower=0)
+        .rolling(period)
+        .mean()
+    )
+
+    loss = (
+        -delta
+        .clip(upper=0)
+        .rolling(period)
+        .mean()
+    )
+
+    rs = (
+        gain /
+        loss.replace(0, np.nan)
+    )
+
+    df["RSI"] = (
+        100 -
+        (
+            100 /
+            (1 + rs)
+        )
+    )
+
+    df["RSI"] = df["RSI"].fillna(50)
+
+    # --------------------------------------------------------
+    # ADX
+    # --------------------------------------------------------
+
+    up_move = df["High"].diff()
+
+    down_move = -df["Low"].diff()
+
+    plus_dm = np.where(
+        (up_move > down_move) &
+        (up_move > 0),
+        up_move,
+        0.0
+    )
+
+    minus_dm = np.where(
+        (down_move > up_move) &
+        (down_move > 0),
+        down_move,
+        0.0
+    )
+
+    tr_sum = (
+        true_range
+        .rolling(period)
+        .sum()
+        .replace(0, np.nan)
+    )
+
+    plus_di = (
+        100 *
+        pd.Series(
+            plus_dm,
+            index=df.index
+        )
+        .rolling(period)
+        .sum()
+        /
+        tr_sum
+    )
+
+    minus_di = (
+        100 *
+        pd.Series(
+            minus_dm,
+            index=df.index
+        )
+        .rolling(period)
+        .sum()
+        /
+        tr_sum
+    )
+
+    dx = (
+        100 *
+        (
+            plus_di -
+            minus_di
+        ).abs()
+        /
+        (
+            plus_di +
+            minus_di
+        ).replace(0, np.nan)
+    )
+
+    df["ADX"] = (
+        dx
+        .rolling(period)
+        .mean()
+        .fillna(0)
+    )
+
+    # --------------------------------------------------------
+    # MARKET REGIME
+    # --------------------------------------------------------
+
+    df["Regime"] = np.where(
+        df["ADX"] < 25,
+        "Ranging",
+        "Trending"
+    )
+
     return df
 
-def calculate_range_atr(df, atr_multiplier=2.0):
-    high = float(df["High"].max())
-    low = float(df["Low"].min())
-    latest_atr = float(df["ATR"].iloc[-1]) if "ATR" in df and not df["ATR"].empty else 0.0
-    upper = high + (latest_atr * atr_multiplier)
-    lower = max(0.0001, low - (latest_atr * atr_multiplier))
-    return lower, upper
 
 # ============================================================
-# BACKTEST ENGINE
+# BINANCE PRECISION HELPERS
 # ============================================================
-def round_to_tick(price, tick_size):
-    if not tick_size or tick_size <= 0: return price
-    return math.floor(price / tick_size) * tick_size
 
-def round_quantity(quantity, step_size):
-    if not step_size or step_size <= 0: return quantity
-    return math.floor(quantity / step_size) * step_size
+def floor_to_step(
+    value,
+    step
+):
 
-def build_grid(lower, upper, grid_count, grid_type):
-    if grid_type == "Arithmetic" or lower <= 0 or upper <= 0:
-        step = (upper - lower) / grid_count
-        return [lower + (step * i) for i in range(grid_count + 1)]
-    ratio = (upper / lower) ** (1 / grid_count)
-    return [lower * (ratio ** i) for i in range(grid_count + 1)]
+    if not step or step <= 0:
+        return float(value)
 
-def backtest_grid(df, lower, upper, grid_count, capital, fee_pct, grid_type, filters):
-    if df.empty: return None
-    current_price = float(df["Close"].iloc[-1])
-    if current_price <= 0: return None
+    return math.floor(
+        value / step + 1e-12
+    ) * step
 
-    grid = build_grid(lower, upper, grid_count, grid_type)
-    tick_size = filters.get("tickSize")
-    if tick_size:
-        grid = sorted(list(set([round_to_tick(p, tick_size) for p in grid])))
-    if len(grid) < 2: return None
 
-    quote_balance = capital * 0.50
-    base_balance = (capital * 0.50) / current_price
-    starting_equity = quote_balance + (base_balance * current_price)
-    order_quote = capital / max(grid_count, 1)
+def round_price(
+    value,
+    tick_size
+):
 
-    step_size = filters.get("stepSize")
-    min_qty = filters.get("minQty")
-    min_notional = filters.get("minNotional")
+    return floor_to_step(
+        value,
+        tick_size
+    )
 
-    crosses = 0
+
+# ============================================================
+# GRID BUILDER
+# ============================================================
+
+def build_grid(
+    lower,
+    upper,
+    count,
+    grid_type,
+    tick_size=0
+):
+
+    if (
+        lower <= 0
+        or upper <= lower
+        or count < 2
+    ):
+        return []
+
+    # --------------------------------------------------------
+    # Arithmetic Grid
+    # --------------------------------------------------------
+
+    if grid_type == "Arithmetic":
+
+        step = (
+            upper - lower
+        ) / count
+
+        raw_levels = [
+            lower + step * i
+            for i in range(count + 1)
+        ]
+
+    # --------------------------------------------------------
+    # Geometric Grid
+    # --------------------------------------------------------
+
+    else:
+
+        ratio = (
+            upper / lower
+        ) ** (
+            1.0 / count
+        )
+
+        raw_levels = [
+            lower * (
+                ratio ** i
+            )
+            for i in range(count + 1)
+        ]
+
+    # --------------------------------------------------------
+    # Binance Tick Size
+    # --------------------------------------------------------
+
+    if tick_size and tick_size > 0:
+
+        raw_levels = [
+            round_price(
+                price,
+                tick_size
+            )
+            for price in raw_levels
+        ]
+
+    levels = sorted(
+        set(
+            round(
+                float(price),
+                12
+            )
+            for price in raw_levels
+        )
+    )
+
+    if len(levels) < 2:
+        return []
+
+    return levels
+
+
+# ============================================================
+# ATR RANGE
+# ============================================================
+
+def range_from_training(
+    df,
+    atr_multiplier
+):
+
+    historical_high = float(
+        df["High"].max()
+    )
+
+    historical_low = float(
+        df["Low"].min()
+    )
+
+    atr = float(
+        df["ATR"].iloc[-1]
+    )
+
+    if (
+        not np.isfinite(atr)
+        or atr <= 0
+    ):
+
+        atr = float(
+            (
+                df["High"] -
+                df["Low"]
+            ).mean()
+        )
+
+    upper = (
+        historical_high +
+        atr * atr_multiplier
+    )
+
+    lower = max(
+        1e-12,
+        historical_low -
+        atr * atr_multiplier
+    )
+
+    return lower, upper, atr
+
+
+# ============================================================
+# GRID BACKTEST ENGINE
+# ============================================================
+
+def backtest_grid(
+    df,
+    lower,
+    upper,
+    grid_count,
+    capital,
+    fee_pct,
+    grid_type,
+    exchange_filter
+):
+
+    if (
+        df.empty
+        or capital <= 0
+    ):
+        return None
+
+    tick_size = exchange_filter.get(
+        "tickSize",
+        0
+    )
+
+    step_size = exchange_filter.get(
+        "stepSize",
+        0
+    )
+
+    min_qty = exchange_filter.get(
+        "minQty",
+        0
+    )
+
+    min_notional = exchange_filter.get(
+        "minNotional",
+        0
+    )
+
+    # --------------------------------------------------------
+    # Build Grid
+    # --------------------------------------------------------
+
+    levels = build_grid(
+        lower,
+        upper,
+        grid_count,
+        grid_type,
+        tick_size
+    )
+
+    if len(levels) < 2:
+        return None
+
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # Backtest starts at FIRST candle.
+    # --------------------------------------------------------
+
+    start_price = float(
+        df["Close"].iloc[0]
+    )
+
+    # --------------------------------------------------------
+    # 50/50 Starting Portfolio
+    # --------------------------------------------------------
+
+    quote_balance = (
+        capital * 0.50
+    )
+
+    base_balance = (
+        capital * 0.50
+    ) / start_price
+
+    # --------------------------------------------------------
+    # Inventory Lots
+    # --------------------------------------------------------
+
+    lots = []
+
+    if base_balance > 0:
+
+        lots.append(
+            {
+                "qty": base_balance,
+                "cost_per_unit": start_price,
+                "grid_buy": False
+            }
+        )
+
+    # --------------------------------------------------------
+    # Statistics
+    # --------------------------------------------------------
+
+    initial_equity = capital
+
     realized_profit = 0.0
-    peak_equity = starting_equity
+
+    completed_cycles = 0
+
+    buy_orders = 0
+
+    sell_orders = 0
+
+    skipped_orders = 0
+
+    range_escape_bars = 0
+
+    peak_equity = capital
+
     max_drawdown = 0.0
-    inventory = {}
+
+    # --------------------------------------------------------
+    # Sell Inventory Function
+    # --------------------------------------------------------
+
+    def sell_inventory(
+        quantity,
+        price
+    ):
+
+        nonlocal realized_profit
+        nonlocal completed_cycles
+
+        remaining = quantity
+
+        sold = 0.0
+
+        cost_removed = 0.0
+
+        while (
+            remaining > 1e-15
+            and lots
+        ):
+
+            lot = lots[0]
+
+            take = min(
+                remaining,
+                lot["qty"]
+            )
+
+            cost_removed += (
+                take *
+                lot["cost_per_unit"]
+            )
+
+            if lot["grid_buy"]:
+
+                completed_cycles += 1
+
+            lot["qty"] -= take
+
+            remaining -= take
+
+            sold += take
+
+            if lot["qty"] <= 1e-15:
+
+                lots.pop(0)
+
+        if sold <= 0:
+            return 0.0
+
+        gross_proceeds = (
+            sold *
+            price
+        )
+
+        selling_fee = (
+            gross_proceeds *
+            fee_pct /
+            100
+        )
+
+        net_proceeds = (
+            gross_proceeds -
+            selling_fee
+        )
+
+        realized_profit += (
+            net_proceeds -
+            cost_removed
+        )
+
+        return sold
+
+    # ========================================================
+    # CANDLE LOOP
+    # ========================================================
 
     for _, row in df.iterrows():
-        o, h, l, c = float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"])
-        path = [o, l, h, c] if c >= o else [o, h, l, c]
-        for start_price, end_price in zip(path[:-1], path[1:]):
-            
-            # --- PRICE MOVING UP ---
-            if end_price > start_price:
-                crossed_levels = [i for i in range(1, len(grid)) if start_price < grid[i] <= end_price]
-                for lvl in crossed_levels:
-                    price = grid[lvl]
-                    buy_lvl = lvl - 1  # THE FIX: Sell the inventory acquired at the grid level BELOW this one
-                    if buy_lvl in inventory:
-                        qty = inventory[buy_lvl]["quantity"]
-                        notional = qty * price
-                        if min_notional and notional < min_notional: continue
-                        fee = notional * fee_pct / 100
-                        quote_balance += (notional - fee)
-                        buy_cost = inventory.pop(buy_lvl)["cost"]
-                        realized_profit += (notional - fee - buy_cost)
-                        crosses += 1
-                        
-            # --- PRICE MOVING DOWN ---
-            elif end_price < start_price:
-                crossed_levels = [i for i in range(len(grid) - 1) if end_price <= grid[i] < start_price]
-                for lvl in reversed(crossed_levels):
-                    price = grid[lvl]
-                    qty = round_quantity(order_quote / price, step_size)
-                    if min_qty and qty < min_qty: continue
-                    notional = qty * price
-                    if min_notional and notional < min_notional: continue
-                    fee = notional * fee_pct / 100
-                    total_cost = notional + fee
-                    if total_cost > quote_balance: continue
-                    quote_balance -= total_cost
-                    base_balance += qty
-                    inventory[lvl] = {"quantity": qty, "cost": total_cost}
-                    crosses += 1
 
-        equity = quote_balance + (base_balance * c)
-        if equity > peak_equity: peak_equity = equity
-        dd = ((peak_equity - equity) / peak_equity) * 100
-        if dd > max_drawdown: max_drawdown = dd
+        open_price = float(
+            row["Open"]
+        )
 
-    realized_roi = (realized_profit / starting_equity) * 100 if starting_equity > 0 else 0
-    grid_spacing = (grid[-1] - grid[0]) / (len(grid) - 1) if len(grid) > 1 else 0
+        high_price = float(
+            row["High"]
+        )
 
-    return {
-        "Realized ROI %": realized_roi,
-        "Trades": crosses,
-        "Max Drawdown %": max_drawdown,
-        "Grid Spacing": grid_spacing
-    }
+        low_price = float(
+            row["Low"]
+        )
 
-def main():
-    st.title("⚡ Binance Spot Grid Assistant V3.5")
-    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    st.info(f"**Data Freshness:** {current_time} UTC | Engine: Operational")
+        close_price = float(
+            row["Close"]
+        )
 
-    st.markdown("### 1. Strategy Parameters")
-    with st.expander("⚙️ Tap to Edit Trading Rules & Indicator Settings", expanded=False):
-        wallet_balance = st.number_input("Available Capital (USDT)", min_value=0.0, value=1000.0, step=50.0)
-        fee_choice = st.selectbox("Trading Fee Tier (Round-Trip)", ["Standard (0.20%)", "BNB Discount (0.15%)", "Zero Fee (0.00%)"])
-        fee_pct = 0.20 if "0.20" in fee_choice else (0.15 if "0.15" in fee_choice else 0.00)
-        grid_type = st.selectbox("Grid Type", ["Arithmetic", "Geometric"])
-        only_ranging = st.checkbox("Filter Out Trending Coins (Only keep ADX < 25)", value=False)
-        atr_mult = st.slider("ATR Volatility Range Multiplier", 0.5, 4.0, 1.5, step=0.1)
-        st.markdown("**Target Profit per Grid Step (%)**")
-        col1, col2, col3 = st.columns(3)
-        with col1: tight_pct = st.number_input("Tight (3D)", min_value=0.1, value=0.6, step=0.1)
-        with col2: mod_pct = st.number_input("Mod (7D)", min_value=0.1, value=1.0, step=0.1)
-        with col3: wide_pct = st.number_input("Wide (14D)", min_value=0.1, value=1.5, step=0.1)
+        # ----------------------------------------------------
+        # Detect range escape
+        # ----------------------------------------------------
 
-    st.markdown("### 2. Market Universe")
-    if st.button("Scan Binance (Phase 1 & 2)"):
-        with st.spinner("Fetching USDT Market Universe..."):
-            symbols, filters = fetch_spot_universe()
-            market_data = fetch_24h_data()
-            if not market_data.empty and symbols:
-                valid_markets = market_data[market_data['symbol'].isin(symbols)]
-                top_candidates = valid_markets.sort_values(by='quoteVolume', ascending=False).head(5)
-                st.success(f"Success: {len(valid_markets)} USDT pairs validated.")
-                st.dataframe(top_candidates[['symbol', 'lastPrice', 'priceChangePercent', 'quoteVolume']], use_container_width=True)
-                st.session_state['candidates'] = top_candidates['symbol'].tolist()
-                st.session_state['filters'] = filters
+        if (
+            high_price > upper
+            or low_price < lower
+        ):
 
-    if st.session_state.get('candidates'):
-        st.markdown("### 3. Backtest Engine (Phases 3-9)")
-        if st.button("Run Indicator-Guided Backtest"):
-            results = []
-            progress_bar = st.progress(0)
-            candidates = st.session_state['candidates']
-            filters_dict = st.session_state.get('filters', {})
-            
-            for i, coin in enumerate(candidates):
-                df_klines = fetch_klines(coin, interval="1h", limit=336)
-                if not df_klines.empty:
-                    latest_adx = round(df_klines['ADX'].iloc[-1], 1)
-                    latest_rsi = round(df_klines['RSI'].iloc[-1], 1)
-                    regime = df_klines['Regime'].iloc[-1]
-                    
-                    if only_ranging and "Trending" in regime:
-                        progress_bar.progress((i + 1) / len(candidates))
+            range_escape_bars += 1
+
+        # ----------------------------------------------------
+        # OHLC Path Assumption
+        #
+        # Bullish candle:
+        # Open -> Low -> High -> Close
+        #
+        # Bearish candle:
+        # Open -> High -> Low -> Close
+        # ----------------------------------------------------
+
+        if close_price >= open_price:
+
+            path = [
+                open_price,
+                low_price,
+                high_price,
+                close_price
+            ]
+
+        else:
+
+            path = [
+                open_price,
+                high_price,
+                low_price,
+                close_price
+            ]
+
+        # ----------------------------------------------------
+        # Simulate movements between path points
+        # ----------------------------------------------------
+
+        for start, end in zip(
+            path[:-1],
+            path[1:]
+        ):
+
+            if end == start:
+                continue
+
+            # =================================================
+            # PRICE MOVING UP
+            # =================================================
+
+            if end > start:
+
+                crossed_levels = [
+                    i
+                    for i in range(
+                        1,
+                        len(levels)
+                    )
+                    if (
+                        start < levels[i]
+                        <= end
+                    )
+                ]
+
+                for idx in crossed_levels:
+
+                    price = levels[idx]
+
+                    # -----------------------------------------
+                    # Order size
+                    # -----------------------------------------
+
+                    order_quote = (
+                        capital /
+                        max(
+                            len(levels) - 1,
+                            1
+                        )
+                    )
+
+                    desired_qty = (
+                        order_quote /
+                        price
+                    )
+
+                    # -----------------------------------------
+                    # Cannot sell more than inventory
+                    # -----------------------------------------
+
+                    available_qty = sum(
+                        lot["qty"]
+                        for lot in lots
+                    )
+
+                    quantity = min(
+                        desired_qty,
+                        available_qty
+                    )
+
+                    quantity = floor_to_step(
+                        quantity,
+                        step_size
+                    )
+
+                    if quantity <= 0:
+
+                        skipped_orders += 1
                         continue
 
-                    strategies = [
-                        {"Type": "Tight (3D)", "df": df_klines.tail(72).copy(), "Target_Pct": tight_pct},
-                        {"Type": "Mod (7D)", "df": df_klines.tail(168).copy(), "Target_Pct": mod_pct},
-                        {"Type": "Wide (14D)", "df": df_klines.tail(336).copy(), "Target_Pct": wide_pct}
-                    ]
-                    
-                    for strat in strategies:
-                        lower, upper = calculate_range_atr(strat["df"], atr_multiplier=atr_mult)
-                        if lower > 0:
-                            ideal_grids = int((((upper - lower) / lower) * 100) / strat["Target_Pct"])
-                        else:
-                            ideal_grids = 5
-                            
-                        suggested_grids = max(5, min(ideal_grids, 150))
-                        
-                        bt_result = backtest_grid(
-                            df=strat["df"], lower=lower, upper=upper,
-                            grid_count=suggested_grids, capital=wallet_balance,
-                            fee_pct=fee_pct, grid_type=grid_type,
-                            filters=filters_dict.get(coin, {})
-                        )
-                        
-                        if bt_result:
-                            step_pct = (bt_result["Grid Spacing"] / lower) * 100 if lower > 0 else 0
-                            results.append({
-                                "Coin": coin, "Strategy": strat["Type"], "Regime": regime,
-                                "ADX": latest_adx, "RSI": latest_rsi,
-                                "Lower": round(lower, 4), "Upper": round(upper, 4),
-                                "Grids": suggested_grids, "Step %": round(step_pct, 2),
-                                "Crosses": bt_result["Trades"],
-                                "Max DD %": round(bt_result["Max Drawdown %"], 2),
-                                "ROI %": round(bt_result["Realized ROI %"], 2)
-                            })
-                progress_bar.progress((i + 1) / len(candidates))
-                
-            st.markdown("### 🏆 V3.5 Final Indicator Ranking")
-            if results:
-                final_df = pd.DataFrame(results).sort_values(by="ROI %", ascending=False).reset_index(drop=True)
-                st.dataframe(final_df, use_container_width=True)
-            else:
-                st.warning("No candidates matched your criteria.")
+                    notional = (
+                        quantity *
+                        price
+                    )
 
-if __name__ == "__main__":
-    main()
-                        
+                    if (
+                        min_qty
+                        and quantity < min_qty
+                    ):
+
+                        skipped_orders += 1
+                        continue
+
+                    if (
+                        min_notional
+                        and notional < min_notional
+                    ):
+
+                        skipped_orders += 1
+                        continue
+
+                    sold = sell_inventory(
+                        quan
