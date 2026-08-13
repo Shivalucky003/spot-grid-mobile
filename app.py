@@ -66,10 +66,11 @@ def main():
     
     # --- INTERACTIVE SETTINGS MENU ---
     st.markdown("### 1. Strategy Parameters")
-    with st.expander("⚙️ Tap to Edit Trading Rules", expanded=False):
-        fee_choice = st.selectbox("Trading Fee Tier (Round-Trip)", ["Standard (0.20%)", "BNB Discount (0.15%)", "Zero Fee (0.00%)"])
+    with st.expander("⚙️ Tap to Edit Trading Rules & Capital", expanded=False):
+        wallet_balance = st.number_input("Available Capital (USDT)", min_value=0.0, value=1000.0, step=50.0)
+        min_grid_inv = st.number_input("Minimum USDT per Grid Step", min_value=5.0, value=15.0, step=1.0)
         
-        # Determine fee float based on selection
+        fee_choice = st.selectbox("Trading Fee Tier (Round-Trip)", ["Standard (0.20%)", "BNB Discount (0.15%)", "Zero Fee (0.00%)"])
         if "0.20" in fee_choice:
             round_trip_fee_pct = 0.20
         elif "0.15" in fee_choice:
@@ -77,8 +78,6 @@ def main():
         else:
             round_trip_fee_pct = 0.00
             
-        min_grid_inv = st.number_input("Minimum USDT per Grid Step", min_value=5.0, value=15.0, step=1.0)
-        
         st.markdown("**Target Profit per Grid Step (%)**")
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -116,7 +115,6 @@ def main():
                     df_7d = df_klines.tail(168)
                     df_14d = df_klines.tail(336)
                     
-                    # Using the dynamic targets from the UI
                     strategies = [
                         {"Type": "Tight (3D)", "df": df_3d, "Target_Pct": tight_pct},
                         {"Type": "Mod (7D)", "df": df_7d, "Target_Pct": mod_pct},
@@ -133,15 +131,15 @@ def main():
                         ideal_grids = int(range_width_pct / strat["Target_Pct"])
                         grid_count = max(5, min(ideal_grids, 150))
                         
-                        # Using the dynamic minimum investment from the UI
                         req_capital = grid_count * min_grid_inv
+                        wallet_pct = (req_capital / wallet_balance) * 100 if wallet_balance > 0 else 0
+                        is_feasible = "✅" if req_capital <= wallet_balance else "❌"
                         
                         grid_spacing = (upper_price - lower_price) / grid_count
                         strat["df"].loc[:, 'price_change'] = strat["df"]['Close'].diff().abs()
                         total_movement = strat["df"]['price_change'].sum()
                         estimated_crosses = int(total_movement / grid_spacing) if grid_spacing > 0 else 0
                         
-                        # Apply dynamic fee selection
                         net_profit_per_cross_pct = strat["Target_Pct"] - round_trip_fee_pct
                         if net_profit_per_cross_pct < 0:
                             net_profit_per_cross_pct = 0
@@ -149,7 +147,7 @@ def main():
                         net_profit_usdt = estimated_crosses * min_grid_inv * (net_profit_per_cross_pct / 100)
                         net_roi_pct = (net_profit_usdt / req_capital) * 100 if req_capital > 0 else 0
                         
-                        results.append({"Coin": coin, "Strategy": strat["Type"], "Price": round(current_price, 4), "Lower": round(lower_price, 4), "Upper": round(upper_price, 4), "Grids": grid_count, "Req USDT": round(req_capital, 0), "Crosses": estimated_crosses, "Net ROI %": round(net_roi_pct, 2)})
+                        results.append({"Coin": coin, "Strategy": strat["Type"], "Price": round(current_price, 4), "Lower": round(lower_price, 4), "Upper": round(upper_price, 4), "Grids": grid_count, "Req USDT": round(req_capital, 0), "Wallet %": round(wallet_pct, 1), "Feasible": is_feasible, "Crosses": estimated_crosses, "Net ROI %": round(net_roi_pct, 2)})
                         
                 progress_bar.progress((i + 1) / len(candidates))
                 
