@@ -11,10 +11,12 @@ BINANCE_EXCHANGE_INFO_URL = "https://data-api.binance.vision/api/v3/exchangeInfo
 BINANCE_24HR_URL = "https://data-api.binance.vision/api/v3/ticker/24hr"
 BINANCE_KLINES_URL = "https://data-api.binance.vision/api/v3/klines"
 
-# List of stablecoins to exclude from grid bot ranking
+# Expanded list of stablecoins and fiat tokens to exclude
 STABLECOIN_BLACKLIST = {
-    "USDC", "FDUSD", "TUSD", "BUSD", "DAI", 
-    "USDP", "EUR", "AEUR", "USDT", "PAX"
+    "USDC", "FDUSD", "TUSD", "BUSD", "DAI", "USDP", "EUR", "AEUR", 
+    "USDT", "PAX", "USD1", "RLUSD", "PYUSD", "USDE", "USDS", "USDD", 
+    "GUSD", "LUSD", "FRAX", "USDJ", "USDB", "DEUSD", "SUSD", "EUSD", 
+    "CUSD", "EURS", "TRY", "BRL", "BIDR", "U"
 }
 
 # --- BACKEND ENGINE (Data GuardDog & API Pipeline) ---
@@ -29,14 +31,23 @@ def fetch_spot_universe():
         
         symbols = []
         for s in data['symbols']:
-            base_asset = s.get('baseAsset', '')
-            quote_asset = s.get('quoteAsset', '')
+            base_asset = s.get('baseAsset', '').upper()
+            quote_asset = s.get('quoteAsset', '').upper()
+            
+            # Smart stablecoin filter:
+            # 1. Must not be in the blacklist
+            # 2. Base asset must not contain 'USD' (catches new/unlisted stablecoins)
+            is_stablecoin = (
+                base_asset in STABLECOIN_BLACKLIST or 
+                "USD" in base_asset or 
+                "EUR" in base_asset
+            )
             
             # Validation: Must be TRADING, USDT quote, spot allowed, AND not a stablecoin
             if (s.get('status') == 'TRADING' and 
                 quote_asset == 'USDT' and 
                 s.get('isSpotTradingAllowed', True) and 
-                base_asset not in STABLECOIN_BLACKLIST):
+                not is_stablecoin):
                 
                 symbols.append(s['symbol'])
         return symbols
@@ -124,8 +135,6 @@ def main():
                 
                 if not df_klines.empty:
                     current_price = df_klines['Close'].iloc[-1]
-                    # Placeholder for Phase 4-8 math (Volatility, Grid Feasibility, Monte Carlo)
-                    # We flush the dataframe instantly after calculation to save RAM
                     
                     results.append({
                         "Coin": coin,
